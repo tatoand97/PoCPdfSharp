@@ -26,12 +26,20 @@ builder.Services.AddProblemDetails(options =>
 });
 builder.Services.AddExceptionHandler<GlobalExceptionHandler>();
 
-builder.Services.Configure<PdfRenderingOptions>(
-    builder.Configuration.GetSection(PdfRenderingOptions.SectionName));
+builder.Services
+    .AddOptions<PdfRenderingOptions>()
+    .Bind(builder.Configuration.GetSection(PdfRenderingOptions.SectionName))
+    .Validate(options => options.MaxResourceBytes > 0,
+        "PdfRendering:MaxResourceBytes must be greater than zero.")
+    .Validate(options => options.ResourceTimeoutSeconds > 0,
+        "PdfRendering:ResourceTimeoutSeconds must be greater than zero.")
+    .Validate(options => options.MaxLayoutPasses > 0,
+        "PdfRendering:MaxLayoutPasses must be greater than zero.")
+    .ValidateOnStart();
 
-builder.Services.AddScoped<PdfRenderRequestValidator>();
-builder.Services.AddScoped<HtmlSanitizationService>();
-builder.Services.AddScoped<HtmlToPdfRenderer>();
+builder.Services.AddScoped<IPdfRenderRequestValidator, PdfRenderRequestValidator>();
+builder.Services.AddScoped<IHtmlSanitizationService, HtmlSanitizationService>();
+builder.Services.AddScoped<IHtmlToPdfRenderer, HtmlToPdfRenderer>();
 
 builder.Services.AddHttpClient(RestrictedResourceRetriever.HttpClientName, client =>
 {

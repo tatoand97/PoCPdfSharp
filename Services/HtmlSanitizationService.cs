@@ -5,18 +5,20 @@ using PoCPdfSharp.Contracts;
 
 namespace PoCPdfSharp.Services;
 
-public sealed partial class HtmlSanitizationService
+public sealed partial class HtmlSanitizationService : IHtmlSanitizationService
 {
     private static readonly StringComparer Comparer = StringComparer.OrdinalIgnoreCase;
 
     private static readonly HashSet<string> AllowedTags = new(
     [
         "html", "head", "body", "title", "style",
+        "main", "header", "footer", "section", "article", "figure", "figcaption",
         "div", "span", "p", "br", "hr",
         "strong", "b", "em", "i", "u", "s", "sub", "sup", "small",
         "blockquote", "code", "pre",
         "h1", "h2", "h3", "h4", "h5", "h6",
         "ul", "ol", "li",
+        "dl", "dt", "dd",
         "table", "thead", "tbody", "tfoot", "tr", "th", "td", "caption", "colgroup", "col",
         "img", "a"
     ], Comparer);
@@ -145,10 +147,17 @@ public sealed partial class HtmlSanitizationService
         }
 
         var document = _htmlParser.ParseDocument(sanitizedHtml);
-        var visibleText = document.Body?.TextContent ?? document.DocumentElement?.TextContent ?? string.Empty;
+        var body = document.Body;
+
+        if (body is null)
+        {
+            return false;
+        }
+
+        var visibleText = body.TextContent;
         var hasVisibleText = !string.IsNullOrWhiteSpace(visibleText);
-        var hasImage = document.QuerySelector("img") is not null;
-        var hasStructuredTable = document
+        var hasImage = body.QuerySelector("img") is not null;
+        var hasStructuredTable = body
             .QuerySelectorAll("table")
             .Any(table => table.QuerySelector("th,td,caption") is not null &&
                           !string.IsNullOrWhiteSpace(table.TextContent));

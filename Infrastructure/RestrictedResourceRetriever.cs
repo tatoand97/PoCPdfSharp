@@ -61,6 +61,23 @@ public sealed class RestrictedResourceRetriever : IResourceRetriever
         return ReadHttpsImage(resolvedUrl);
     }
 
+    public Uri EnsureResourceUrlAllowed(string resourceUrl)
+    {
+        _cancellationToken.ThrowIfCancellationRequested();
+
+        if (string.IsNullOrWhiteSpace(resourceUrl))
+        {
+            throw Reject("The resource URL is empty.");
+        }
+
+        if (!Uri.TryCreate(resourceUrl, UriKind.RelativeOrAbsolute, out var url))
+        {
+            throw Reject($"The resource URL '{resourceUrl}' is malformed.");
+        }
+
+        return ResolveUrl(url);
+    }
+
     private Uri ResolveUrl(Uri url)
     {
         if (!url.IsAbsoluteUri)
@@ -73,6 +90,11 @@ public sealed class RestrictedResourceRetriever : IResourceRetriever
             url = new Uri(_request.BaseUri, url);
         }
 
+        if (!string.IsNullOrWhiteSpace(url.UserInfo))
+        {
+            throw Reject("Resource URLs cannot include user information.");
+        }
+
         if (string.Equals(url.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase))
         {
             if (!_options.AllowHttpsResources)
@@ -80,7 +102,7 @@ public sealed class RestrictedResourceRetriever : IResourceRetriever
                 throw Reject($"HTTPS resources are disabled. Resource: '{url}'.");
             }
 
-            EnforceBaseUriHost(url);
+            EnforceBaseUriAuthority(url);
             return url;
         }
 
@@ -97,17 +119,18 @@ public sealed class RestrictedResourceRetriever : IResourceRetriever
         throw Reject($"The resource URL scheme '{url.Scheme}' is not allowed.");
     }
 
-    private void EnforceBaseUriHost(Uri resolvedUrl)
+    private void EnforceBaseUriAuthority(Uri resolvedUrl)
     {
-        if (!_options.RestrictToBaseUriHost || string.IsNullOrWhiteSpace(_request.BaseUriHost))
+        if (!_options.RestrictToBaseUriHost || _request.BaseUri is null)
         {
             return;
         }
 
-        if (!string.Equals(resolvedUrl.IdnHost, _request.BaseUriHost, StringComparison.OrdinalIgnoreCase))
+        if (!string.Equals(resolvedUrl.IdnHost, _request.BaseUri.IdnHost, StringComparison.OrdinalIgnoreCase) ||
+            resolvedUrl.Port != _request.BaseUri.Port)
         {
             throw Reject(
-                $"The resource host '{resolvedUrl.IdnHost}' is not allowed. Expected host '{_request.BaseUriHost}'.");
+                $"The resource authority '{resolvedUrl.Authority}' is not allowed. Expected authority '{_request.BaseUri.Authority}'.");
         }
     }
 
@@ -119,10 +142,10 @@ public sealed class RestrictedResourceRetriever : IResourceRetriever
         try
         {
             using var requestMessage = new HttpRequestMessage(HttpMethod.Get, url);
-            using var response = _httpClient.SendAsync(
+            using var response = _httpClient.Send(
                 requestMessage,
                 HttpCompletionOption.ResponseHeadersRead,
-                timeoutTokenSource.Token).GetAwaiter().GetResult();
+                timeoutTokenSource.Token);
 
             if (!response.IsSuccessStatusCode)
             {
@@ -145,11 +168,9 @@ public sealed class RestrictedResourceRetriever : IResourceRetriever
                     $"The remote resource '{url}' exceeded the {_options.MaxResourceBytes} byte limit.");
             }
 
-            using var responseStream = response.Content.ReadAsStreamAsync(timeoutTokenSource.Token)
-                .GetAwaiter()
-                .GetResult();
+            using var responseStream = response.Content.ReadAsStream(timeoutTokenSource.Token);
 
-            return ReadAllBytesWithLimit(responseStream, url);
+            return ReadAllBytesWithLimit(responseStream, url, timeoutTokenSource.Token);
         }
         catch (UnprocessableHtmlException)
         {
@@ -216,7 +237,7 @@ public sealed class RestrictedResourceRetriever : IResourceRetriever
         return bytes;
     }
 
-    private byte[] ReadAllBytesWithLimit(Stream inputStream, Uri url)
+    private byte[] ReadAllBytesWithLimit(Stream inputStream, Uri url, CancellationToken timeoutToken)
     {
         var buffer = ArrayPool<byte>.Shared.Rent(81_920);
 
@@ -229,9 +250,12 @@ public sealed class RestrictedResourceRetriever : IResourceRetriever
             {
                 _cancellationToken.ThrowIfCancellationRequested();
 
+                // pdfHTML pulls resources through a synchronous interface. We keep the public
+                // boundary synchronous, but use timeout-aware async reads here so the body
+                // download cannot outlive the configured remote-resource timeout.
                 var bytesRead = inputStream.ReadAsync(
                         buffer.AsMemory(0, buffer.Length),
-                        _cancellationToken)
+                        timeoutToken)
                     .AsTask()
                     .GetAwaiter()
                     .GetResult();

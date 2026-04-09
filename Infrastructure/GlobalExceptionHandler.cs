@@ -1,11 +1,9 @@
-using System.Diagnostics;
-using System.Text.Json;
 using Microsoft.AspNetCore.Diagnostics;
 using Microsoft.AspNetCore.Mvc;
 
 namespace PoCPdfSharp.Infrastructure;
 
-public sealed class GlobalExceptionHandler : IExceptionHandler
+public sealed class GlobalExceptionHandler(IProblemDetailsService problemDetailsService) : IExceptionHandler
 {
     public async ValueTask<bool> TryHandleAsync(
         HttpContext httpContext,
@@ -46,15 +44,15 @@ public sealed class GlobalExceptionHandler : IExceptionHandler
             Instance = httpContext.Request.Path
         };
 
-        problemDetails.Extensions["traceId"] =
-            Activity.Current?.TraceId.ToString() ?? httpContext.TraceIdentifier;
-
         httpContext.Response.StatusCode = statusCode;
-        httpContext.Response.ContentType = "application/problem+json";
 
-        await httpContext.Response.WriteAsync(
-            JsonSerializer.Serialize(problemDetails),
-            cancellationToken);
+        await problemDetailsService.WriteAsync(new ProblemDetailsContext
+        {
+            HttpContext = httpContext,
+            Exception = exception,
+            ProblemDetails = problemDetails
+        });
+
         return true;
     }
 }

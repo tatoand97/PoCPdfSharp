@@ -11,7 +11,7 @@ public static class PdfRenderEndpoints
     {
         var group = app.MapGroup("/api/pdf").WithTags("PDF");
 
-        group.MapPost("/render", RenderPdfAsync)
+        group.MapPost("/render", RenderPdf)
             .Accepts<PdfRenderRequest>("application/json")
             .Produces(StatusCodes.Status200OK, contentType: "application/pdf")
             .ProducesProblem(StatusCodes.Status400BadRequest)
@@ -24,11 +24,11 @@ public static class PdfRenderEndpoints
         return app;
     }
 
-    private static IResult RenderPdfAsync(
+    private static IResult RenderPdf(
         PdfRenderRequest request,
-        PdfRenderRequestValidator validator,
-        HtmlSanitizationService sanitizationService,
-        HtmlToPdfRenderer renderer,
+        IPdfRenderRequestValidator validator,
+        IHtmlSanitizationService sanitizationService,
+        IHtmlToPdfRenderer renderer,
         HttpContext httpContext,
         ILogger<PdfRenderEndpointHandler> logger,
         CancellationToken cancellationToken)
@@ -39,7 +39,13 @@ public static class PdfRenderEndpoints
         ValidatedPdfRenderRequest? validatedRequest = null;
         HtmlSanitizationResult? sanitizationResult = null;
         PdfRenderResult? renderResult = null;
-        var traceId = Activity.Current?.TraceId.ToString();
+        var traceId = Activity.Current?.TraceId.ToString() ?? httpContext.TraceIdentifier;
+
+        using var requestScope = logger.BeginScope(new Dictionary<string, object?>
+        {
+            ["TraceIdentifier"] = httpContext.TraceIdentifier,
+            ["TraceId"] = traceId
+        });
 
         try
         {
@@ -104,13 +110,48 @@ public static class PdfRenderEndpoints
                 contentType: "application/pdf",
                 fileDownloadName: validatedRequest.FileName);
         }
+        catch (RequestValidationException exception)
+        {
+            totalStopwatch.Stop();
+
+            logger.LogWarning(
+                exception,
+                "Rejected PDF render request. FileName={FileName} OriginalHtmlLength={OriginalHtmlLength} ValidationMs={ValidationMs} TotalMs={TotalMs}",
+                validatedRequest?.FileName ?? request.FileName ?? "document.pdf",
+                validatedRequest?.OriginalHtmlLength ?? request.Html?.Length ?? 0,
+                validationElapsed.TotalMilliseconds,
+                totalStopwatch.Elapsed.TotalMilliseconds);
+
+            throw;
+        }
+        catch (UnprocessableHtmlException exception)
+        {
+            totalStopwatch.Stop();
+
+            logger.LogWarning(
+                exception,
+                "Rejected HTML during PDF render. FileName={FileName} OriginalHtmlLength={OriginalHtmlLength} SanitizedHtmlLength={SanitizedHtmlLength} ValidationMs={ValidationMs} SanitizationMs={SanitizationMs} ConverterPropertiesMs={ConverterPropertiesMs} RenderMs={RenderMs} ByteExtractionMs={ByteExtractionMs} TotalMs={TotalMs} WasAggressiveSanitization={WasAggressiveSanitization} RemovedRelevantTags={RemovedRelevantTags}",
+                validatedRequest?.FileName ?? request.FileName ?? "document.pdf",
+                validatedRequest?.OriginalHtmlLength ?? request.Html?.Length ?? 0,
+                sanitizationResult?.SanitizedHtmlLength ?? 0,
+                validationElapsed.TotalMilliseconds,
+                sanitizationElapsed.TotalMilliseconds,
+                renderResult?.ConverterPropertiesElapsed.TotalMilliseconds ?? 0,
+                renderResult?.RenderElapsed.TotalMilliseconds ?? 0,
+                renderResult?.ByteExtractionElapsed.TotalMilliseconds ?? 0,
+                totalStopwatch.Elapsed.TotalMilliseconds,
+                sanitizationResult?.WasAggressive ?? false,
+                sanitizationResult is null ? string.Empty : string.Join(",", sanitizationResult.RemovedRelevantTags));
+
+            throw;
+        }
         catch (Exception exception) when (exception is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
         {
             totalStopwatch.Stop();
 
             logger.LogError(
                 exception,
-                "Failed to render PDF for {FileName}. OriginalHtmlLength={OriginalHtmlLength} SanitizedHtmlLength={SanitizedHtmlLength} PdfSizeBytes={PdfSizeBytes} ValidationMs={ValidationMs} SanitizationMs={SanitizationMs} ConverterPropertiesMs={ConverterPropertiesMs} RenderMs={RenderMs} ByteExtractionMs={ByteExtractionMs} TotalMs={TotalMs} WasAggressiveSanitization={WasAggressiveSanitization} RemovedRelevantTags={RemovedRelevantTags} TraceIdentifier={TraceIdentifier} TraceId={TraceId}",
+                "Failed to render PDF unexpectedly. FileName={FileName} OriginalHtmlLength={OriginalHtmlLength} SanitizedHtmlLength={SanitizedHtmlLength} PdfSizeBytes={PdfSizeBytes} ValidationMs={ValidationMs} SanitizationMs={SanitizationMs} ConverterPropertiesMs={ConverterPropertiesMs} RenderMs={RenderMs} ByteExtractionMs={ByteExtractionMs} TotalMs={TotalMs} WasAggressiveSanitization={WasAggressiveSanitization} RemovedRelevantTags={RemovedRelevantTags}",
                 validatedRequest?.FileName ?? "document.pdf",
                 validatedRequest?.OriginalHtmlLength ?? request.Html?.Length ?? 0,
                 sanitizationResult?.SanitizedHtmlLength ?? 0,
@@ -122,9 +163,7 @@ public static class PdfRenderEndpoints
                 renderResult?.ByteExtractionElapsed.TotalMilliseconds ?? 0,
                 totalStopwatch.Elapsed.TotalMilliseconds,
                 sanitizationResult?.WasAggressive ?? false,
-                sanitizationResult is null ? string.Empty : string.Join(",", sanitizationResult.RemovedRelevantTags),
-                httpContext.TraceIdentifier,
-                traceId);
+                sanitizationResult is null ? string.Empty : string.Join(",", sanitizationResult.RemovedRelevantTags));
 
             throw;
         }

@@ -1,99 +1,140 @@
 # PoCPdfSharp
 
-API de prueba en ASP.NET Core para recibir HTML, sanitizarlo y devolver un PDF generado en memoria usando iText pdfHTML.
+PoC de `HTML -> PDF` sobre una `ASP.NET Core Web API` en `.NET 10`, manteniendo el flujo actual:
+
+`request JSON -> validación -> sanitización -> render HTML->PDF en memoria -> respuesta binaria application/pdf`
+
+La implementación usa `iText` actual con `pdfHTML`, sanitiza con `HtmlSanitizer`, restringe recursos externos y devuelve siempre el PDF binario, nunca base64.
 
 ## Qué hace
 
-- Expone un endpoint `POST /api/pdf/render`.
-- Recibe HTML en JSON.
-- Sanitiza etiquetas, atributos, CSS y recursos externos antes de renderizar.
-- Genera el PDF completamente en memoria.
-- Devuelve el binario con `Content-Type: application/pdf`.
-- Registra métricas de validación, sanitización y render.
+- Expone `POST /api/pdf/render`.
+- Recibe un JSON con `html`, `fileName` y `baseUri`.
+- Valida el request y normaliza el nombre del archivo.
+- Sanitiza HTML, atributos, CSS y contenido activo.
+- Renderiza el PDF completamente en memoria.
+- Devuelve `200 OK` con `Content-Type: application/pdf`.
+- Devuelve errores consistentes como `application/problem+json` con `traceId`.
 
-## Stack
+## Stack y paquetes clave
 
 - `.NET 10`
 - `ASP.NET Core Minimal API`
-- `iText + pdfHTML`
-- `HtmlSanitizer`
-- `xUnit` para pruebas de integración
+- `itext` `9.6.0`
+- `itext.pdfhtml` `6.3.2`
+- `itext.bouncy-castle-adapter` `9.6.0`
+- `HtmlSanitizer` `9.0.892`
+- `xUnit v3` + `Microsoft.AspNetCore.Mvc.Testing`
 
 ## Estructura
 
-- `Program.cs`: configuración de la aplicación y DI.
-- `Endpoints/`: definición del endpoint HTTP.
-- `Services/`: validación, sanitización y renderizado.
-- `Infrastructure/`: manejo global de errores y restricción de recursos remotos.
-- `Contracts/`: contratos de request/response internos.
-- `Options/`: opciones configurables de render.
-- `tests/PoCPdfSharp.Tests/`: pruebas de integración.
+- `Program.cs`: composición de DI, logging, `ProblemDetails`, opciones y pipeline HTTP.
+- `Endpoints/`: endpoint `POST /api/pdf/render`.
+- `Services/`: validación, sanitización y render HTML->PDF.
+- `Infrastructure/`: exception handler y política de recursos externos.
+- `Contracts/`: request y resultados internos del pipeline.
+- `Options/`: opciones configurables de renderizado.
+- `tests/PoCPdfSharp.Tests/`: pruebas de integración reales del endpoint.
 
-## Requisitos
+## Ejecutar
 
-- SDK de `.NET 10`
-
-## Ejecutar localmente
+### Restore
 
 ```powershell
 dotnet restore
-dotnet run
 ```
 
-Por defecto puedes probar el endpoint con el archivo [`PoCPdfSharp.http`](C:/Users/PC/source/repos/PoCPdfSharp/PoCPdfSharp.http) o con cualquier cliente HTTP.
+### Build
 
-En entorno de desarrollo también se expone OpenAPI.
+```powershell
+dotnet build PoCPdfSharp.slnx
+```
+
+### Run
+
+```powershell
+dotnet run --project PoCPdfSharp.csproj
+```
+
+### Test
+
+```powershell
+dotnet test PoCPdfSharp.slnx
+```
 
 ## Endpoint
 
 `POST /api/pdf/render`
 
-### Request
+### Payload
 
 ```json
 {
   "html": "<html><body><h1>PoC HTML to PDF</h1><p>Este PDF se genera en memoria.</p></body></html>",
-  "fileName": "documento-prueba",
+  "fileName": "documento.pdf",
   "baseUri": "https://example.com/"
 }
 ```
 
 ### Campos
 
-- `html`: obligatorio. Contenido HTML a sanitizar y renderizar.
-- `fileName`: opcional. Si no se envía, se usa `document.pdf`. Si no termina en `.pdf`, se agrega automáticamente.
-- `baseUri`: opcional. Debe ser una URL absoluta `https`. Se usa para resolver recursos relativos, por ejemplo imágenes.
+- `html`: obligatorio.
+- `fileName`: opcional. Si no existe o queda inválido tras la normalización, se usa `document.pdf`.
+- `baseUri`: opcional. Debe ser una URL absoluta `https` y no puede incluir user info.
 
-### Respuesta exitosa
+## Ejemplos de uso
 
-- `200 OK`
+### curl
+
+```bash
+curl -X POST "http://localhost:5134/api/pdf/render" \
+  -H "Content-Type: application/json" \
+  -H "Accept: application/pdf" \
+  --data-raw '{
+    "html":"<html><body><h1>Reporte</h1><p>PDF en memoria.</p></body></html>",
+    "fileName":"reporte-demo",
+    "baseUri":"https://example.com/"
+  }' \
+  --output reporte-demo.pdf
+```
+
+### HTTP file
+
+El repo incluye [`PoCPdfSharp.http`](C:/Users/PC/source/repos/PoCPdfSharp/PoCPdfSharp.http) para pruebas rápidas desde el IDE.
+
+## Respuestas
+
+### 200 OK
+
 - `Content-Type: application/pdf`
-- El cuerpo contiene el PDF binario.
+- cuerpo binario del PDF
 
-### Errores
+### 400 Bad Request
 
-- `400 Bad Request`: request inválido, body ausente o `baseUri` no válida.
-- `422 Unprocessable Entity`: el HTML sanitizado no tiene contenido útil o intenta usar recursos/markup no permitido.
-- `500 Internal Server Error`: error inesperado durante el render.
+Se usa para request inválido, por ejemplo:
 
-Las respuestas de error se devuelven como `application/problem+json` e incluyen `traceId`.
+- `html` ausente o vacío
+- `baseUri` no absoluta o no `https`
+- `baseUri` con user info
+- JSON mal formado
 
-## Reglas de seguridad
+### 422 Unprocessable Entity
 
-Esta PoC ya incorpora varias defensas para reducir riesgos al convertir HTML arbitrario:
+Se usa cuando el HTML sanitizado o sus recursos ya no son válidos para render seguro, por ejemplo:
 
-- Solo acepta `baseUri` con esquema `https`.
-- Sanitiza HTML y CSS antes de renderizar.
-- Elimina etiquetas peligrosas como `script`, `iframe`, `form`, `object`, `embed`, `svg`, `meta` y similares.
-- Solo permite un conjunto acotado de tags, atributos y propiedades CSS.
-- Solo admite imágenes remotas por `https` o `data:` base64.
-- Restringe recursos remotos al mismo host de `baseUri` cuando `RestrictToBaseUriHost` está habilitado.
-- Rechaza recursos con media types no permitidos.
-- Limita tamaño de recursos y tiempo máximo de descarga.
+- el HTML queda sin contenido útil
+- un recurso externo viola la política de seguridad
+- una imagen remota excede tamaño, timeout o media type permitido
+
+### 500 Internal Server Error
+
+- error inesperado durante el render
+
+Todas las respuestas de error salen como `application/problem+json` e incluyen `traceId`.
 
 ## Configuración
 
-Las opciones viven en `appsettings.json`, sección `PdfRendering`:
+La sección `PdfRendering` vive en [`appsettings.json`](C:/Users/PC/source/repos/PoCPdfSharp/appsettings.json):
 
 ```json
 "PdfRendering": {
@@ -106,25 +147,66 @@ Las opciones viven en `appsettings.json`, sección `PdfRendering`:
 }
 ```
 
-### Significado de las opciones
+### Significado
 
-- `MaxResourceBytes`: tamaño máximo permitido por recurso externo.
-- `ResourceTimeoutSeconds`: timeout para descargar recursos remotos.
-- `AllowHttpsResources`: habilita o bloquea recursos cargados por `https`.
-- `AllowDataUriImages`: habilita o bloquea imágenes embebidas en `data:`.
-- `RestrictToBaseUriHost`: limita recursos remotos al host de `baseUri`.
-- `MaxLayoutPasses`: límite de layout configurado en pdfHTML.
+- `MaxResourceBytes`: límite por recurso externo o `data:` URI.
+- `ResourceTimeoutSeconds`: timeout total para recuperar recursos remotos.
+- `AllowHttpsResources`: habilita o bloquea imágenes por `https`.
+- `AllowDataUriImages`: habilita o bloquea imágenes `data:`.
+- `RestrictToBaseUriHost`: restringe recursos externos a la misma autoridad de `baseUri` (`host + puerto`).
+- `MaxLayoutPasses`: límite de layout de `pdfHTML`.
 
-## Pruebas
+La aplicación ahora valida estas opciones al arranque y falla temprano si la configuración básica es inválida.
 
-```powershell
-dotnet test
-```
+## Decisiones técnicas relevantes
 
-Estado verificado localmente: `1` prueba superada.
+- El endpoint mantiene el contrato actual y devuelve binario PDF, no base64.
+- El render sigue siendo 100% en memoria.
+- No se usa `GC.Collect()` por request; el control de memoria se apoya en disposal determinista.
+- `pdfHTML` expone un retriever síncrono para recursos externos. Donde fue posible se eliminó `sync-over-async`; donde la interfaz de iText obliga al borde síncrono, se dejó documentado y con timeout efectivo sobre la descarga del body.
+- Se añadió una validación previa de URLs de recursos ya sanitizados para que violaciones de política no terminen en un `200` silencioso si `pdfHTML` decide omitir un recurso.
+- El `ProblemDetails` de excepciones ahora usa el servicio estándar del framework, lo que deja la respuesta consistente con la configuración global y con `traceId`.
+- Los errores controlados de validación y HTML no se registran como fallos inesperados.
+
+## Seguridad
+
+La PoC está endurecida para escenarios de HTML arbitrario, dentro de las limitaciones propias de una PoC:
+
+- elimina `script`, `iframe`, `form`, `object`, `embed`, `svg`, `meta` y contenido activo
+- elimina handlers inline y CSS peligroso
+- bloquea `javascript:`, `vbscript:` y `url(...)` en valores CSS permitidos
+- solo permite un subconjunto acotado de tags, atributos y propiedades CSS útiles para PDF
+- restringe imágenes remotas a `https` y `data:`
+- aplica límite de bytes, timeout y media types permitidos
+- bloquea redirects automáticos
+- puede restringir recursos externos a la misma autoridad de `baseUri`
+
+## Limitaciones
+
+- No es un motor de navegador completo.
+- No ejecuta JavaScript.
+- El soporte CSS depende de `pdfHTML`, no de Chromium.
+- La PoC no introduce colas, almacenamiento persistente ni cache de recursos.
+- El output está pensado para demostración técnica y endurecimiento básico, no como hardening final de producción.
+
+## Pruebas de integración
+
+Cobertura verificada localmente:
+
+- `POST /api/pdf/render` con HTML válido -> `200`
+- `Content-Type = application/pdf`
+- body binario no vacío y con cabecera `%PDF-`
+- request sin `html` -> `400`
+- HTML inútil tras sanitización -> `422`
+- normalización de `fileName`
+- `baseUri` inválida -> `400`
+- recurso externo no permitido -> `422`
+- `traceId` presente en errores
+
+Estado verificado localmente: `7` pruebas superadas.
 
 ## Licencia
 
-El repositorio incluye [`LICENSE.txt`](C:/Users/PC/source/repos/PoCPdfSharp/LICENSE.txt) con plantilla MIT, pero todavía tiene placeholders (`[year]`, `[fullname]`) que conviene completar.
+El repo incluye [`LICENSE.txt`](C:/Users/PC/source/repos/PoCPdfSharp/LICENSE.txt).
 
-Además, este proyecto usa iText/pdfHTML, que tiene condiciones de licenciamiento propias. Antes de usarlo en producción o distribuirlo, revisa el modelo de licencia aplicable a tu caso.
+Importante: `iText` y `pdfHTML` tienen licenciamiento dual. Antes de usar esta base fuera de una PoC o en un contexto comercial, revisa el esquema de licencia aplicable a tu caso.

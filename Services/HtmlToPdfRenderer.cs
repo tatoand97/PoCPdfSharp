@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using AngleSharp.Html.Parser;
 using iText.Html2pdf;
 using iText.Kernel.Pdf;
 using Microsoft.Extensions.Options;
@@ -8,7 +9,7 @@ using PoCPdfSharp.Options;
 
 namespace PoCPdfSharp.Services;
 
-public sealed class HtmlToPdfRenderer
+public sealed class HtmlToPdfRenderer : IHtmlToPdfRenderer
 {
     private readonly IHttpClientFactory _httpClientFactory;
     private readonly IOptions<PdfRenderingOptions> _options;
@@ -32,7 +33,14 @@ public sealed class HtmlToPdfRenderer
         cancellationToken.ThrowIfCancellationRequested();
 
         var converterPropertiesStopwatch = Stopwatch.StartNew();
-        var converterProperties = BuildConverterProperties(request, cancellationToken);
+        var resourceRetriever = CreateResourceRetriever(request, cancellationToken);
+
+        // pdfHTML may silently omit rejected resources depending on the element type.
+        // Preflighting sanitized resource URLs keeps the HTTP contract deterministic and
+        // turns policy violations into a controlled 422 before layout begins.
+        EnsureAllowedResourceUrls(sanitizedHtml, resourceRetriever, cancellationToken);
+
+        var converterProperties = BuildConverterProperties(request, resourceRetriever);
         converterPropertiesStopwatch.Stop();
 
         using var output = new MemoryStream();
@@ -60,17 +68,44 @@ public sealed class HtmlToPdfRenderer
             byteExtractionStopwatch.Elapsed);
     }
 
-    private ConverterProperties BuildConverterProperties(
+    private RestrictedResourceRetriever CreateResourceRetriever(
         ValidatedPdfRenderRequest request,
         CancellationToken cancellationToken)
     {
-        var resourceRetriever = new RestrictedResourceRetriever(
+        return new RestrictedResourceRetriever(
             _httpClientFactory,
             _options,
             _loggerFactory.CreateLogger<RestrictedResourceRetriever>(),
             request,
             cancellationToken);
+    }
 
+    private static void EnsureAllowedResourceUrls(
+        string sanitizedHtml,
+        RestrictedResourceRetriever resourceRetriever,
+        CancellationToken cancellationToken)
+    {
+        var document = new HtmlParser().ParseDocument(sanitizedHtml);
+
+        foreach (var image in document.QuerySelectorAll("img[src]"))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var source = image.GetAttribute("src");
+
+            if (string.IsNullOrWhiteSpace(source))
+            {
+                continue;
+            }
+
+            resourceRetriever.EnsureResourceUrlAllowed(source);
+        }
+    }
+
+    private ConverterProperties BuildConverterProperties(
+        ValidatedPdfRenderRequest request,
+        RestrictedResourceRetriever resourceRetriever)
+    {
         var converterProperties = new ConverterProperties()
             .SetCharset("utf-8")
             .SetLimitOfLayouts(_options.Value.MaxLayoutPasses)
