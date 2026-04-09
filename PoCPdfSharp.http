@@ -1,0 +1,13 @@
+@PoCPdfSharp_HostAddress = http://localhost:5134
+
+POST {{PoCPdfSharp_HostAddress}}/api/pdf/render
+Content-Type: application/json
+Accept: application/pdf
+
+{
+  "html": "<html><body><h1>PoC HTML to PDF</h1><p>Este PDF se genera en memoria.</p><table style='width:100%; border-collapse:collapse;'><tr><th style='border:1px solid #333; padding:8px;'>Columna</th><th style='border:1px solid #333; padding:8px;'>Valor</th></tr><tr><td style='border:1px solid #333; padding:8px;'>Estado</td><td style='border:1px solid #333; padding:8px;'>OK</td></tr></table></body></html>",
+  "fileName": "documento-prueba",
+  "baseUri": "https://example.com/"
+}
+
+###

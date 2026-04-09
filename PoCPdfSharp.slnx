@@ -1,0 +1,4 @@
+<Solution>
+  <Project Path="PoCPdfSharp.csproj" />
+  <Project Path="tests/PoCPdfSharp.Tests/PoCPdfSharp.Tests.csproj" />
+</Solution>

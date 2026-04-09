@@ -1,0 +1,134 @@
+using System.Diagnostics;
+using PoCPdfSharp.Contracts;
+using PoCPdfSharp.Infrastructure;
+using PoCPdfSharp.Services;
+
+namespace PoCPdfSharp.Endpoints;
+
+public static class PdfRenderEndpoints
+{
+    public static IEndpointRouteBuilder MapPdfRenderEndpoints(this IEndpointRouteBuilder app)
+    {
+        var group = app.MapGroup("/api/pdf").WithTags("PDF");
+
+        group.MapPost("/render", RenderPdfAsync)
+            .Accepts<PdfRenderRequest>("application/json")
+            .Produces(StatusCodes.Status200OK, contentType: "application/pdf")
+            .ProducesProblem(StatusCodes.Status400BadRequest)
+            .ProducesProblem(StatusCodes.Status422UnprocessableEntity)
+            .ProducesProblem(StatusCodes.Status500InternalServerError)
+            .WithName("RenderPdf")
+            .WithSummary("Sanitizes HTML and renders a PDF in memory.")
+            .WithDescription("Receives HTML as JSON, sanitizes it, renders it to PDF in memory, and returns the binary PDF directly.");
+
+        return app;
+    }
+
+    private static IResult RenderPdfAsync(
+        PdfRenderRequest request,
+        PdfRenderRequestValidator validator,
+        HtmlSanitizationService sanitizationService,
+        HtmlToPdfRenderer renderer,
+        HttpContext httpContext,
+        ILogger<PdfRenderEndpointHandler> logger,
+        CancellationToken cancellationToken)
+    {
+        var totalStopwatch = Stopwatch.StartNew();
+        var validationElapsed = TimeSpan.Zero;
+        var sanitizationElapsed = TimeSpan.Zero;
+        ValidatedPdfRenderRequest? validatedRequest = null;
+        HtmlSanitizationResult? sanitizationResult = null;
+        PdfRenderResult? renderResult = null;
+        var traceId = Activity.Current?.TraceId.ToString();
+
+        try
+        {
+            var validationStopwatch = Stopwatch.StartNew();
+            validatedRequest = validator.Validate(request, cancellationToken);
+            validationStopwatch.Stop();
+            validationElapsed = validationStopwatch.Elapsed;
+
+            using var scope = logger.BeginScope(new Dictionary<string, object?>
+            {
+                ["TraceIdentifier"] = httpContext.TraceIdentifier,
+                ["TraceId"] = traceId,
+                ["FileName"] = validatedRequest.FileName
+            });
+
+            var sanitizationStopwatch = Stopwatch.StartNew();
+            sanitizationResult = sanitizationService.Sanitize(validatedRequest, cancellationToken);
+            sanitizationStopwatch.Stop();
+            sanitizationElapsed = sanitizationStopwatch.Elapsed;
+
+            if (!sanitizationResult.HasUsableContent)
+            {
+                throw new UnprocessableHtmlException(
+                    "The sanitized HTML does not contain enough safe content to render a PDF.");
+            }
+
+            renderResult = renderer.Render(validatedRequest, sanitizationResult.Html, cancellationToken);
+            totalStopwatch.Stop();
+
+            if (sanitizationResult.WasAggressive)
+            {
+                logger.LogWarning(
+                    "Aggressive sanitization detected for {FileName}. RemovedRelevantTags={RemovedRelevantTags} RemovedTagCount={RemovedTagCount} RemovedAttributeCount={RemovedAttributeCount} RemovedStyleCount={RemovedStyleCount} RemovedAtRuleCount={RemovedAtRuleCount} RemovedCommentCount={RemovedCommentCount}",
+                    validatedRequest.FileName,
+                    string.Join(",", sanitizationResult.RemovedRelevantTags),
+                    sanitizationResult.RemovedTagCount,
+                    sanitizationResult.RemovedAttributeCount,
+                    sanitizationResult.RemovedStyleCount,
+                    sanitizationResult.RemovedAtRuleCount,
+                    sanitizationResult.RemovedCommentCount);
+            }
+
+            logger.LogInformation(
+                "Rendered PDF successfully for {FileName}. OriginalHtmlLength={OriginalHtmlLength} SanitizedHtmlLength={SanitizedHtmlLength} PdfSizeBytes={PdfSizeBytes} ValidationMs={ValidationMs} SanitizationMs={SanitizationMs} ConverterPropertiesMs={ConverterPropertiesMs} RenderMs={RenderMs} ByteExtractionMs={ByteExtractionMs} TotalMs={TotalMs} WasAggressiveSanitization={WasAggressiveSanitization} RemovedRelevantTags={RemovedRelevantTags} TraceIdentifier={TraceIdentifier} TraceId={TraceId}",
+                validatedRequest.FileName,
+                validatedRequest.OriginalHtmlLength,
+                sanitizationResult.SanitizedHtmlLength,
+                renderResult.Content.Length,
+                validationElapsed.TotalMilliseconds,
+                sanitizationElapsed.TotalMilliseconds,
+                renderResult.ConverterPropertiesElapsed.TotalMilliseconds,
+                renderResult.RenderElapsed.TotalMilliseconds,
+                renderResult.ByteExtractionElapsed.TotalMilliseconds,
+                totalStopwatch.Elapsed.TotalMilliseconds,
+                sanitizationResult.WasAggressive,
+                string.Join(",", sanitizationResult.RemovedRelevantTags),
+                httpContext.TraceIdentifier,
+                traceId);
+
+            return TypedResults.File(
+                renderResult.Content,
+                contentType: "application/pdf",
+                fileDownloadName: validatedRequest.FileName);
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
+        {
+            totalStopwatch.Stop();
+
+            logger.LogError(
+                exception,
+                "Failed to render PDF for {FileName}. OriginalHtmlLength={OriginalHtmlLength} SanitizedHtmlLength={SanitizedHtmlLength} PdfSizeBytes={PdfSizeBytes} ValidationMs={ValidationMs} SanitizationMs={SanitizationMs} ConverterPropertiesMs={ConverterPropertiesMs} RenderMs={RenderMs} ByteExtractionMs={ByteExtractionMs} TotalMs={TotalMs} WasAggressiveSanitization={WasAggressiveSanitization} RemovedRelevantTags={RemovedRelevantTags} TraceIdentifier={TraceIdentifier} TraceId={TraceId}",
+                validatedRequest?.FileName ?? "document.pdf",
+                validatedRequest?.OriginalHtmlLength ?? request.Html?.Length ?? 0,
+                sanitizationResult?.SanitizedHtmlLength ?? 0,
+                renderResult?.Content.Length ?? 0,
+                validationElapsed.TotalMilliseconds,
+                sanitizationElapsed.TotalMilliseconds,
+                renderResult?.ConverterPropertiesElapsed.TotalMilliseconds ?? 0,
+                renderResult?.RenderElapsed.TotalMilliseconds ?? 0,
+                renderResult?.ByteExtractionElapsed.TotalMilliseconds ?? 0,
+                totalStopwatch.Elapsed.TotalMilliseconds,
+                sanitizationResult?.WasAggressive ?? false,
+                sanitizationResult is null ? string.Empty : string.Join(",", sanitizationResult.RemovedRelevantTags),
+                httpContext.TraceIdentifier,
+                traceId);
+
+            throw;
+        }
+    }
+
+    private sealed class PdfRenderEndpointHandler;
+}
