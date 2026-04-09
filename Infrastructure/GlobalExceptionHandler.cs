@@ -1,9 +1,12 @@
+using System.Diagnostics;
 using Microsoft.AspNetCore.Diagnostics;
 using Microsoft.AspNetCore.Mvc;
 
 namespace PoCPdfSharp.Infrastructure;
 
-public sealed class GlobalExceptionHandler(IProblemDetailsService problemDetailsService) : IExceptionHandler
+public sealed class GlobalExceptionHandler(
+    IProblemDetailsService problemDetailsService,
+    ILogger<GlobalExceptionHandler> logger) : IExceptionHandler
 {
     public async ValueTask<bool> TryHandleAsync(
         HttpContext httpContext,
@@ -35,11 +38,19 @@ public sealed class GlobalExceptionHandler(IProblemDetailsService problemDetails
                 "https://httpstatuses.com/500")
         };
 
+        var detail = exception switch
+        {
+            RequestValidationException or UnprocessableHtmlException or BadHttpRequestException => exception.Message,
+            _ => "The PDF render request failed unexpectedly. Use the traceId value to correlate server-side diagnostics."
+        };
+
+        LogControlledException(httpContext, exception, statusCode);
+
         var problemDetails = new ProblemDetails
         {
             Status = statusCode,
             Title = title,
-            Detail = exception.Message,
+            Detail = detail,
             Type = type,
             Instance = httpContext.Request.Path
         };
@@ -54,5 +65,32 @@ public sealed class GlobalExceptionHandler(IProblemDetailsService problemDetails
         });
 
         return true;
+    }
+
+    private void LogControlledException(HttpContext httpContext, Exception exception, int statusCode)
+    {
+        if (exception.HasBeenLogged())
+        {
+            return;
+        }
+
+        if (exception is not (RequestValidationException or UnprocessableHtmlException or BadHttpRequestException))
+        {
+            return;
+        }
+
+        var traceId = Activity.Current?.TraceId.ToString() ?? httpContext.TraceIdentifier;
+
+        logger.LogWarning(
+            "Handled {ExceptionType} as {StatusCode}. Method={RequestMethod} Path={RequestPath} Reason={Reason} TraceIdentifier={TraceIdentifier} TraceId={TraceId}",
+            exception.GetType().Name,
+            statusCode,
+            httpContext.Request.Method,
+            httpContext.Request.Path,
+            exception.Message,
+            httpContext.TraceIdentifier,
+            traceId);
+
+        exception.MarkAsLogged();
     }
 }

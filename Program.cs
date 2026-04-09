@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Net;
+using Microsoft.AspNetCore.Diagnostics;
 using PoCPdfSharp.Endpoints;
 using PoCPdfSharp.Infrastructure;
 using PoCPdfSharp.Options;
@@ -53,7 +54,12 @@ builder.Services.AddHttpClient(RestrictedResourceRetriever.HttpClientName, clien
 
 var app = builder.Build();
 
-app.UseExceptionHandler();
+app.UseExceptionHandler(new ExceptionHandlerOptions
+{
+    SuppressDiagnosticsCallback = context =>
+        context.Exception is RequestValidationException or UnprocessableHtmlException or BadHttpRequestException ||
+        context.Exception.HasBeenLogged()
+});
 app.UseHttpsRedirection();
 
 if (app.Environment.IsDevelopment())

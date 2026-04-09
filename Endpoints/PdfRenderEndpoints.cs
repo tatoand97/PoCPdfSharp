@@ -89,7 +89,7 @@ public static class PdfRenderEndpoints
             }
 
             logger.LogInformation(
-                "Rendered PDF successfully for {FileName}. OriginalHtmlLength={OriginalHtmlLength} SanitizedHtmlLength={SanitizedHtmlLength} PdfSizeBytes={PdfSizeBytes} ValidationMs={ValidationMs} SanitizationMs={SanitizationMs} ConverterPropertiesMs={ConverterPropertiesMs} RenderMs={RenderMs} ByteExtractionMs={ByteExtractionMs} TotalMs={TotalMs} WasAggressiveSanitization={WasAggressiveSanitization} RemovedRelevantTags={RemovedRelevantTags} TraceIdentifier={TraceIdentifier} TraceId={TraceId}",
+                "Rendered PDF successfully for {FileName}. OriginalHtmlLength={OriginalHtmlLength} SanitizedHtmlLength={SanitizedHtmlLength} PdfSizeBytes={PdfSizeBytes} ValidationMs={ValidationMs} SanitizationMs={SanitizationMs} ConverterPropertiesMs={ConverterPropertiesMs} RenderMs={RenderMs} ByteExtractionMs={ByteExtractionMs} TotalMs={TotalMs} WasAggressiveSanitization={WasAggressiveSanitization} RemovedRelevantTags={RemovedRelevantTags}",
                 validatedRequest.FileName,
                 validatedRequest.OriginalHtmlLength,
                 sanitizationResult.SanitizedHtmlLength,
@@ -101,9 +101,7 @@ public static class PdfRenderEndpoints
                 renderResult.ByteExtractionElapsed.TotalMilliseconds,
                 totalStopwatch.Elapsed.TotalMilliseconds,
                 sanitizationResult.WasAggressive,
-                string.Join(",", sanitizationResult.RemovedRelevantTags),
-                httpContext.TraceIdentifier,
-                traceId);
+                string.Join(",", sanitizationResult.RemovedRelevantTags));
 
             return TypedResults.File(
                 renderResult.Content,
@@ -115,13 +113,14 @@ public static class PdfRenderEndpoints
             totalStopwatch.Stop();
 
             logger.LogWarning(
-                exception,
-                "Rejected PDF render request. FileName={FileName} OriginalHtmlLength={OriginalHtmlLength} ValidationMs={ValidationMs} TotalMs={TotalMs}",
+                "Rejected PDF render request. Reason={Reason} FileName={FileName} OriginalHtmlLength={OriginalHtmlLength} ValidationMs={ValidationMs} TotalMs={TotalMs}",
+                exception.Message,
                 validatedRequest?.FileName ?? request.FileName ?? "document.pdf",
                 validatedRequest?.OriginalHtmlLength ?? request.Html?.Length ?? 0,
                 validationElapsed.TotalMilliseconds,
                 totalStopwatch.Elapsed.TotalMilliseconds);
 
+            exception.MarkAsLogged();
             throw;
         }
         catch (UnprocessableHtmlException exception)
@@ -129,8 +128,8 @@ public static class PdfRenderEndpoints
             totalStopwatch.Stop();
 
             logger.LogWarning(
-                exception,
-                "Rejected HTML during PDF render. FileName={FileName} OriginalHtmlLength={OriginalHtmlLength} SanitizedHtmlLength={SanitizedHtmlLength} ValidationMs={ValidationMs} SanitizationMs={SanitizationMs} ConverterPropertiesMs={ConverterPropertiesMs} RenderMs={RenderMs} ByteExtractionMs={ByteExtractionMs} TotalMs={TotalMs} WasAggressiveSanitization={WasAggressiveSanitization} RemovedRelevantTags={RemovedRelevantTags}",
+                "Rejected HTML during PDF render. Reason={Reason} FileName={FileName} OriginalHtmlLength={OriginalHtmlLength} SanitizedHtmlLength={SanitizedHtmlLength} ValidationMs={ValidationMs} SanitizationMs={SanitizationMs} ConverterPropertiesMs={ConverterPropertiesMs} RenderMs={RenderMs} ByteExtractionMs={ByteExtractionMs} TotalMs={TotalMs} WasAggressiveSanitization={WasAggressiveSanitization} RemovedRelevantTags={RemovedRelevantTags}",
+                exception.Message,
                 validatedRequest?.FileName ?? request.FileName ?? "document.pdf",
                 validatedRequest?.OriginalHtmlLength ?? request.Html?.Length ?? 0,
                 sanitizationResult?.SanitizedHtmlLength ?? 0,
@@ -143,6 +142,7 @@ public static class PdfRenderEndpoints
                 sanitizationResult?.WasAggressive ?? false,
                 sanitizationResult is null ? string.Empty : string.Join(",", sanitizationResult.RemovedRelevantTags));
 
+            exception.MarkAsLogged();
             throw;
         }
         catch (Exception exception) when (exception is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
@@ -165,6 +165,7 @@ public static class PdfRenderEndpoints
                 sanitizationResult?.WasAggressive ?? false,
                 sanitizationResult is null ? string.Empty : string.Join(",", sanitizationResult.RemovedRelevantTags));
 
+            exception.MarkAsLogged();
             throw;
         }
     }

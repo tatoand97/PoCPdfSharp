@@ -141,6 +141,47 @@ public sealed class PdfRenderEndpointTests : IClassFixture<WebApplicationFactory
     }
 
     [Fact]
+    public async Task PostRender_WithBaseUriUserInfo_ReturnsBadRequestProblemDetails()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+
+        using var response = await _httpClient.PostAsJsonAsync(
+            "/api/pdf/render",
+            new PdfRenderRequest
+            {
+                Html = "<html><body><p>BaseUri con credenciales.</p></body></html>",
+                FileName = "invalid-base-uri-user-info",
+                BaseUri = "https://user:secret@example.com/"
+            },
+            cancellationToken);
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+
+        var problem = await ReadProblemDetailsAsync(response, cancellationToken);
+
+        Assert.Equal(400, problem.GetProperty("status").GetInt32());
+        Assert.Contains("cannot include user information", problem.GetProperty("detail").GetString());
+    }
+
+    [Fact]
+    public async Task PostRender_WithMalformedJson_ReturnsBadRequestProblemDetails()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+
+        using var response = await _httpClient.PostAsync(
+            "/api/pdf/render",
+            new StringContent("{\"html\":", Encoding.UTF8, "application/json"),
+            cancellationToken);
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+
+        var problem = await ReadProblemDetailsAsync(response, cancellationToken);
+
+        Assert.Equal(400, problem.GetProperty("status").GetInt32());
+        Assert.Equal("The HTTP request is invalid.", problem.GetProperty("title").GetString());
+    }
+
+    [Fact]
     public async Task PostRender_WhenExternalResourceAuthorityIsRejected_ReturnsUnprocessableEntity()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
@@ -161,6 +202,73 @@ public sealed class PdfRenderEndpointTests : IClassFixture<WebApplicationFactory
 
         Assert.Equal(422, problem.GetProperty("status").GetInt32());
         Assert.Contains("authority", problem.GetProperty("detail").GetString());
+    }
+
+    [Fact]
+    public async Task PostRender_WhenHttpsResourceHasNoBaseUriAnchor_ReturnsUnprocessableEntity()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+
+        using var response = await _httpClient.PostAsJsonAsync(
+            "/api/pdf/render",
+            new PdfRenderRequest
+            {
+                Html = "<html><body><img src=\"https://example.com/image.png\" alt=\"Remote\" /></body></html>",
+                FileName = "missing-base-uri"
+            },
+            cancellationToken);
+
+        Assert.Equal(HttpStatusCode.UnprocessableEntity, response.StatusCode);
+
+        var problem = await ReadProblemDetailsAsync(response, cancellationToken);
+
+        Assert.Equal(422, problem.GetProperty("status").GetInt32());
+        Assert.Contains("require a valid baseUri", problem.GetProperty("detail").GetString());
+    }
+
+    [Fact]
+    public async Task PostRender_WhenDataUriMediaTypeIsNotAllowed_ReturnsUnprocessableEntity()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+
+        using var response = await _httpClient.PostAsJsonAsync(
+            "/api/pdf/render",
+            new PdfRenderRequest
+            {
+                Html = "<html><body><img src=\"data:text/plain;base64,SGVsbG8=\" alt=\"Blocked\" /></body></html>",
+                FileName = "blocked-data-uri",
+                BaseUri = "https://example.com/"
+            },
+            cancellationToken);
+
+        Assert.Equal(HttpStatusCode.UnprocessableEntity, response.StatusCode);
+
+        var problem = await ReadProblemDetailsAsync(response, cancellationToken);
+
+        Assert.Equal(422, problem.GetProperty("status").GetInt32());
+        Assert.Contains("data URI media type", problem.GetProperty("detail").GetString());
+    }
+
+    [Fact]
+    public async Task PostRender_WhenFileNameFallsBackToDefault_UsesDocumentPdf()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+
+        using var response = await _httpClient.PostAsJsonAsync(
+            "/api/pdf/render",
+            new PdfRenderRequest
+            {
+                Html = "<html><body><p>Nombre reservado.</p></body></html>",
+                FileName = "CON",
+                BaseUri = "https://example.com/"
+            },
+            cancellationToken);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        var fileName = GetReturnedFileName(response);
+
+        Assert.Equal("document.pdf", fileName);
     }
 
     [Fact]

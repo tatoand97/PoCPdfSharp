@@ -1,4 +1,5 @@
 using System.Buffers;
+using System.Collections.Concurrent;
 using iText.StyledXmlParser.Resolver.Resource;
 using Microsoft.Extensions.Options;
 using PoCPdfSharp.Contracts;
@@ -22,7 +23,9 @@ public sealed class RestrictedResourceRetriever : IResourceRetriever
     };
 
     private readonly HttpClient _httpClient;
-    private readonly ILogger<RestrictedResourceRetriever> _logger;
+    // The retriever lives for a single render request, so caching avoids repeated
+    // fetches/decodes without retaining resource bytes beyond the request scope.
+    private readonly ConcurrentDictionary<string, byte[]> _resourceCache = new(StringComparer.Ordinal);
     private readonly PdfRenderingOptions _options;
     private readonly ValidatedPdfRenderRequest _request;
     private readonly CancellationToken _cancellationToken;
@@ -30,12 +33,10 @@ public sealed class RestrictedResourceRetriever : IResourceRetriever
     public RestrictedResourceRetriever(
         IHttpClientFactory httpClientFactory,
         IOptions<PdfRenderingOptions> options,
-        ILogger<RestrictedResourceRetriever> logger,
         ValidatedPdfRenderRequest request,
         CancellationToken cancellationToken)
     {
         _httpClient = httpClientFactory.CreateClient(HttpClientName);
-        _logger = logger;
         _options = options.Value;
         _request = request;
         _cancellationToken = cancellationToken;
@@ -52,13 +53,18 @@ public sealed class RestrictedResourceRetriever : IResourceRetriever
         _cancellationToken.ThrowIfCancellationRequested();
 
         var resolvedUrl = ResolveUrl(url);
+        var cacheKey = GetCacheKey(resolvedUrl);
 
-        if (string.Equals(resolvedUrl.Scheme, "data", StringComparison.OrdinalIgnoreCase))
+        if (_resourceCache.TryGetValue(cacheKey, out var cachedBytes))
         {
-            return ReadDataUriImage(resolvedUrl);
+            return cachedBytes;
         }
 
-        return ReadHttpsImage(resolvedUrl);
+        var bytes = string.Equals(resolvedUrl.Scheme, "data", StringComparison.OrdinalIgnoreCase)
+            ? ReadDataUriImage(resolvedUrl)
+            : ReadHttpsImage(resolvedUrl);
+
+        return _resourceCache.GetOrAdd(cacheKey, bytes);
     }
 
     public Uri EnsureResourceUrlAllowed(string resourceUrl)
@@ -100,6 +106,12 @@ public sealed class RestrictedResourceRetriever : IResourceRetriever
             if (!_options.AllowHttpsResources)
             {
                 throw Reject($"HTTPS resources are disabled. Resource: '{url}'.");
+            }
+
+            if (_options.RestrictToBaseUriHost && _request.BaseUri is null)
+            {
+                throw Reject(
+                    $"HTTPS resources require a valid baseUri when RestrictToBaseUriHost is enabled. Resource: '{url}'.");
             }
 
             EnforceBaseUriAuthority(url);
@@ -285,13 +297,14 @@ public sealed class RestrictedResourceRetriever : IResourceRetriever
 
     private UnprocessableHtmlException Reject(string message)
     {
-        _logger.LogWarning(
-            "Rejected external resource while rendering PDF. FileName={FileName} BaseUriHost={BaseUriHost} Reason={Reason}",
-            _request.FileName,
-            _request.BaseUriHost,
-            message);
-
         return new UnprocessableHtmlException(message);
+    }
+
+    private static string GetCacheKey(Uri resolvedUrl)
+    {
+        return string.Equals(resolvedUrl.Scheme, "data", StringComparison.OrdinalIgnoreCase)
+            ? resolvedUrl.OriginalString
+            : resolvedUrl.AbsoluteUri;
     }
 
     private static long EstimateBase64DecodedLength(string payload)

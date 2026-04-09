@@ -33,7 +33,6 @@ public sealed class PdfRenderRequestValidator : IPdfRenderRequestValidator
         var normalizedFileName = NormalizeFileName(request.FileName);
 
         Uri? baseUri = null;
-        string? baseUriHost = null;
 
         if (!string.IsNullOrWhiteSpace(request.BaseUri))
         {
@@ -50,15 +49,13 @@ public sealed class PdfRenderRequestValidator : IPdfRenderRequestValidator
             }
 
             baseUri = parsedBaseUri;
-            baseUriHost = parsedBaseUri.IdnHost;
         }
 
         return new ValidatedPdfRenderRequest(
             request.Html,
             normalizedFileName,
             request.Html.Length,
-            baseUri,
-            baseUriHost);
+            baseUri);
     }
 
     private static string NormalizeFileName(string? fileName)

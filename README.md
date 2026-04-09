@@ -1,6 +1,6 @@
 # PoCPdfSharp
 
-PoC de `HTML -> PDF` sobre una `ASP.NET Core Web API` en `.NET 10`, manteniendo el flujo actual:
+PoC de `HTML -> PDF` sobre una `ASP.NET Core Minimal API` en `.NET 10`, manteniendo el flujo actual:
 
 `request JSON -> validación -> sanitización -> render HTML->PDF en memoria -> respuesta binaria application/pdf`
 
@@ -31,7 +31,7 @@ La implementación usa `iText` actual con `pdfHTML`, sanitiza con `HtmlSanitizer
 - `Program.cs`: composición de DI, logging, `ProblemDetails`, opciones y pipeline HTTP.
 - `Endpoints/`: endpoint `POST /api/pdf/render`.
 - `Services/`: validación, sanitización y render HTML->PDF.
-- `Infrastructure/`: exception handler y política de recursos externos.
+- `Infrastructure/`: exception handler, supresión selectiva de diagnósticos y política de recursos externos.
 - `Contracts/`: request y resultados internos del pipeline.
 - `Options/`: opciones configurables de renderizado.
 - `tests/PoCPdfSharp.Tests/`: pruebas de integración reales del endpoint.
@@ -100,7 +100,7 @@ curl -X POST "http://localhost:5134/api/pdf/render" \
 
 ### HTTP file
 
-El repo incluye [`PoCPdfSharp.http`](C:/Users/PC/source/repos/PoCPdfSharp/PoCPdfSharp.http) para pruebas rápidas desde el IDE.
+El repo incluye [`PoCPdfSharp.http`](./PoCPdfSharp.http) para pruebas rápidas desde el IDE.
 
 ## Respuestas
 
@@ -124,17 +124,20 @@ Se usa cuando el HTML sanitizado o sus recursos ya no son válidos para render s
 
 - el HTML queda sin contenido útil
 - un recurso externo viola la política de seguridad
+- un recurso `https` no tiene `baseUri` de referencia cuando `RestrictToBaseUriHost=true`
 - una imagen remota excede tamaño, timeout o media type permitido
+- una imagen `data:` usa media type no permitido o payload inválido
 
 ### 500 Internal Server Error
 
 - error inesperado durante el render
+- `detail` no expone la excepción interna; se usa `traceId` para correlación
 
 Todas las respuestas de error salen como `application/problem+json` e incluyen `traceId`.
 
 ## Configuración
 
-La sección `PdfRendering` vive en [`appsettings.json`](C:/Users/PC/source/repos/PoCPdfSharp/appsettings.json):
+La sección `PdfRendering` vive en [`appsettings.json`](./appsettings.json):
 
 ```json
 "PdfRendering": {
@@ -153,20 +156,21 @@ La sección `PdfRendering` vive en [`appsettings.json`](C:/Users/PC/source/repos
 - `ResourceTimeoutSeconds`: timeout total para recuperar recursos remotos.
 - `AllowHttpsResources`: habilita o bloquea imágenes por `https`.
 - `AllowDataUriImages`: habilita o bloquea imágenes `data:`.
-- `RestrictToBaseUriHost`: restringe recursos externos a la misma autoridad de `baseUri` (`host + puerto`).
+- `RestrictToBaseUriHost`: restringe recursos externos a la misma autoridad de `baseUri` (`host + puerto`). Si está activo, los recursos `https` requieren un `baseUri` válido para anclar la restricción.
 - `MaxLayoutPasses`: límite de layout de `pdfHTML`.
 
-La aplicación ahora valida estas opciones al arranque y falla temprano si la configuración básica es inválida.
+La aplicación valida estas opciones al arranque y falla temprano si la configuración básica es inválida.
 
 ## Decisiones técnicas relevantes
 
 - El endpoint mantiene el contrato actual y devuelve binario PDF, no base64.
 - El render sigue siendo 100% en memoria.
 - No se usa `GC.Collect()` por request; el control de memoria se apoya en disposal determinista.
-- `pdfHTML` expone un retriever síncrono para recursos externos. Donde fue posible se eliminó `sync-over-async`; donde la interfaz de iText obliga al borde síncrono, se dejó documentado y con timeout efectivo sobre la descarga del body.
-- Se añadió una validación previa de URLs de recursos ya sanitizados para que violaciones de política no terminen en un `200` silencioso si `pdfHTML` decide omitir un recurso.
-- El `ProblemDetails` de excepciones ahora usa el servicio estándar del framework, lo que deja la respuesta consistente con la configuración global y con `traceId`.
-- Los errores controlados de validación y HTML no se registran como fallos inesperados.
+- El endpoint permanece síncrono a propósito. `pdfHTML` y el retriever de recursos de `iText` exponen interfaces síncronas, así que envolver el render en un `Task.Run` no aporta una asincronía real.
+- El borde bloqueante se mantiene lo más acotado posible al convertidor de `iText` y a la recuperación obligatoriamente síncrona de recursos; alrededor de eso se siguen aplicando cancelación, timeout y límites de bytes.
+- Se añade una validación previa de URLs de recursos ya sanitizados para que violaciones de política no terminen en un `200` silencioso si `pdfHTML` decide omitir un recurso.
+- Los errores controlados se registran una sola vez como `Warning` sin stack trace redundante; los errores inesperados se registran una sola vez como `Error`.
+- El `ProblemDetails` usa el servicio estándar del framework y conserva `traceId` en todos los errores.
 
 ## Seguridad
 
@@ -186,7 +190,7 @@ La PoC está endurecida para escenarios de HTML arbitrario, dentro de las limita
 - No es un motor de navegador completo.
 - No ejecuta JavaScript.
 - El soporte CSS depende de `pdfHTML`, no de Chromium.
-- La PoC no introduce colas, almacenamiento persistente ni cache de recursos.
+- La PoC no introduce colas, almacenamiento persistente ni cache compartida de recursos entre requests.
 - El output está pensado para demostración técnica y endurecimiento básico, no como hardening final de producción.
 
 ## Pruebas de integración
@@ -197,16 +201,21 @@ Cobertura verificada localmente:
 - `Content-Type = application/pdf`
 - body binario no vacío y con cabecera `%PDF-`
 - request sin `html` -> `400`
-- HTML inútil tras sanitización -> `422`
-- normalización de `fileName`
 - `baseUri` inválida -> `400`
+- `baseUri` con user info -> `400`
+- JSON mal formado -> `400`
+- HTML inútil tras sanitización -> `422`
 - recurso externo no permitido -> `422`
+- recurso `https` sin `baseUri` cuando la restricción por host está activa -> `422`
+- `data:` URI con media type no permitido -> `422`
+- normalización de `fileName`
+- `fileName` reservado -> fallback a `document.pdf`
 - `traceId` presente en errores
 
-Estado verificado localmente: `7` pruebas superadas.
+Estado verificado localmente: `12` pruebas superadas.
 
 ## Licencia
 
-El repo incluye [`LICENSE.txt`](C:/Users/PC/source/repos/PoCPdfSharp/LICENSE.txt).
+El repo incluye [`LICENSE.txt`](./LICENSE.txt).
 
 Importante: `iText` y `pdfHTML` tienen licenciamiento dual. Antes de usar esta base fuera de una PoC o en un contexto comercial, revisa el esquema de licencia aplicable a tu caso.

@@ -13,16 +13,13 @@ public sealed class HtmlToPdfRenderer : IHtmlToPdfRenderer
 {
     private readonly IHttpClientFactory _httpClientFactory;
     private readonly IOptions<PdfRenderingOptions> _options;
-    private readonly ILoggerFactory _loggerFactory;
 
     public HtmlToPdfRenderer(
         IHttpClientFactory httpClientFactory,
-        IOptions<PdfRenderingOptions> options,
-        ILoggerFactory loggerFactory)
+        IOptions<PdfRenderingOptions> options)
     {
         _httpClientFactory = httpClientFactory;
         _options = options;
-        _loggerFactory = loggerFactory;
     }
 
     public PdfRenderResult Render(
@@ -43,29 +40,18 @@ public sealed class HtmlToPdfRenderer : IHtmlToPdfRenderer
         var converterProperties = BuildConverterProperties(request, resourceRetriever);
         converterPropertiesStopwatch.Stop();
 
-        using var output = new MemoryStream();
-
-        // Forcing GC.Collect() per request would increase latency and reduce throughput.
-        // Deterministic disposal and not retaining large objects beyond the request are the correct controls here.
         var renderStopwatch = Stopwatch.StartNew();
-        using (var writer = new PdfWriter(output))
-        using (var pdfDocument = new PdfDocument(writer))
-        {
-            HtmlConverter.ConvertToPdf(sanitizedHtml, pdfDocument, converterProperties);
-        }
+        var (pdfBytes, byteExtractionElapsed) = RenderPdfBytes(
+            sanitizedHtml,
+            converterProperties,
+            cancellationToken);
         renderStopwatch.Stop();
-
-        cancellationToken.ThrowIfCancellationRequested();
-
-        var byteExtractionStopwatch = Stopwatch.StartNew();
-        var pdfBytes = output.ToArray();
-        byteExtractionStopwatch.Stop();
 
         return new PdfRenderResult(
             pdfBytes,
             converterPropertiesStopwatch.Elapsed,
             renderStopwatch.Elapsed,
-            byteExtractionStopwatch.Elapsed);
+            byteExtractionElapsed);
     }
 
     private RestrictedResourceRetriever CreateResourceRetriever(
@@ -75,7 +61,6 @@ public sealed class HtmlToPdfRenderer : IHtmlToPdfRenderer
         return new RestrictedResourceRetriever(
             _httpClientFactory,
             _options,
-            _loggerFactory.CreateLogger<RestrictedResourceRetriever>(),
             request,
             cancellationToken);
     }
@@ -98,7 +83,12 @@ public sealed class HtmlToPdfRenderer : IHtmlToPdfRenderer
                 continue;
             }
 
-            resourceRetriever.EnsureResourceUrlAllowed(source);
+            var resolvedUrl = resourceRetriever.EnsureResourceUrlAllowed(source);
+
+            if (string.Equals(resolvedUrl.Scheme, "data", StringComparison.OrdinalIgnoreCase))
+            {
+                _ = resourceRetriever.GetByteArrayByUrl(resolvedUrl);
+            }
         }
     }
 
@@ -117,5 +107,31 @@ public sealed class HtmlToPdfRenderer : IHtmlToPdfRenderer
         }
 
         return converterProperties;
+    }
+
+    private static (byte[] Content, TimeSpan ByteExtractionElapsed) RenderPdfBytes(
+        string sanitizedHtml,
+        ConverterProperties converterProperties,
+        CancellationToken cancellationToken)
+    {
+        using var output = new MemoryStream();
+
+        // iText/pdfHTML exposes a synchronous conversion API, so we keep the blocking
+        // section narrowed to the converter call plus deterministic disposal.
+        using (var writer = new PdfWriter(output))
+        using (var pdfDocument = new PdfDocument(writer))
+        {
+            HtmlConverter.ConvertToPdf(sanitizedHtml, pdfDocument, converterProperties);
+        }
+
+        cancellationToken.ThrowIfCancellationRequested();
+
+        // Forcing GC.Collect() per request would increase latency and reduce throughput.
+        // Copying the finalized PDF bytes here avoids retaining the MemoryStream beyond the request.
+        var byteExtractionStopwatch = Stopwatch.StartNew();
+        var pdfBytes = output.ToArray();
+        byteExtractionStopwatch.Stop();
+
+        return (pdfBytes, byteExtractionStopwatch.Elapsed);
     }
 }
