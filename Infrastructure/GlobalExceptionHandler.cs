@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Text.Json;
 using Microsoft.AspNetCore.Diagnostics;
 using Microsoft.AspNetCore.Mvc;
 
@@ -54,17 +55,39 @@ public sealed class GlobalExceptionHandler(
             Type = type,
             Instance = httpContext.Request.Path
         };
+        problemDetails.Extensions["traceId"] =
+            Activity.Current?.TraceId.ToString() ?? httpContext.TraceIdentifier;
 
         httpContext.Response.StatusCode = statusCode;
-
-        await problemDetailsService.WriteAsync(new ProblemDetailsContext
+        try
         {
-            HttpContext = httpContext,
-            Exception = exception,
-            ProblemDetails = problemDetails
-        });
+            await problemDetailsService.WriteAsync(new ProblemDetailsContext
+            {
+                HttpContext = httpContext,
+                Exception = exception,
+                ProblemDetails = problemDetails
+            });
+        }
+        catch (InvalidOperationException) when (!httpContext.Response.HasStarted)
+        {
+            await WriteFallbackProblemDetailsAsync(httpContext, problemDetails, cancellationToken);
+        }
 
         return true;
+    }
+
+    private static Task WriteFallbackProblemDetailsAsync(
+        HttpContext httpContext,
+        ProblemDetails problemDetails,
+        CancellationToken cancellationToken)
+    {
+        httpContext.Response.ContentType = "application/problem+json";
+
+        return httpContext.Response.WriteAsJsonAsync(
+            problemDetails,
+            JsonSerializerOptions.Web,
+            contentType: "application/problem+json",
+            cancellationToken: cancellationToken);
     }
 
     private void LogControlledException(HttpContext httpContext, Exception exception, int statusCode)

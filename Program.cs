@@ -38,11 +38,36 @@ builder.Services
         "PdfRendering:MaxLayoutPasses must be greater than zero.")
     .ValidateOnStart();
 
+builder.Services
+    .AddOptions<RemoteImageOptions>()
+    .Bind(builder.Configuration.GetSection(RemoteImageOptions.SectionName))
+    .Validate(options => options.AllowedImageHosts.Count > 0,
+        "RemoteImages:AllowedImageHosts must contain at least one host.")
+    .Validate(options => options.MaxImageBytes > 0,
+        "RemoteImages:MaxImageBytes must be greater than zero.")
+    .Validate(options => options.RequestTimeoutSeconds > 0,
+        "RemoteImages:RequestTimeoutSeconds must be greater than zero.")
+    .Validate(options => options.MaxRedirects >= 0,
+        "RemoteImages:MaxRedirects must be zero or greater.")
+    .ValidateOnStart();
+
 builder.Services.AddScoped<IPdfRenderRequestValidator, PdfRenderRequestValidator>();
 builder.Services.AddScoped<IHtmlSanitizationService, HtmlSanitizationService>();
+builder.Services.AddScoped<IHostAddressResolver, DnsHostAddressResolver>();
+builder.Services.AddScoped<IRemoteImageInliningService, RemoteImageInliningService>();
 builder.Services.AddScoped<IHtmlToPdfRenderer, HtmlToPdfRenderer>();
 
 builder.Services.AddHttpClient(RestrictedResourceRetriever.HttpClientName, client =>
+{
+    client.Timeout = Timeout.InfiniteTimeSpan;
+    client.DefaultRequestHeaders.UserAgent.ParseAdd("PoCPdfSharp/1.0");
+}).ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler
+{
+    AllowAutoRedirect = false,
+    AutomaticDecompression = DecompressionMethods.Deflate | DecompressionMethods.GZip
+});
+
+builder.Services.AddHttpClient(RemoteImageInliningService.HttpClientName, client =>
 {
     client.Timeout = Timeout.InfiniteTimeSpan;
     client.DefaultRequestHeaders.UserAgent.ParseAdd("PoCPdfSharp/1.0");

@@ -24,10 +24,11 @@ public static class PdfRenderEndpoints
         return app;
     }
 
-    private static IResult RenderPdf(
+    private static async Task<IResult> RenderPdf(
         PdfRenderRequest request,
         IPdfRenderRequestValidator validator,
         IHtmlSanitizationService sanitizationService,
+        IRemoteImageInliningService remoteImageInliningService,
         IHtmlToPdfRenderer renderer,
         HttpContext httpContext,
         ILogger<PdfRenderEndpointHandler> logger,
@@ -36,8 +37,10 @@ public static class PdfRenderEndpoints
         var totalStopwatch = Stopwatch.StartNew();
         var validationElapsed = TimeSpan.Zero;
         var sanitizationElapsed = TimeSpan.Zero;
+        var remoteImageInliningElapsed = TimeSpan.Zero;
         ValidatedPdfRenderRequest? validatedRequest = null;
         HtmlSanitizationResult? sanitizationResult = null;
+        RemoteImageInliningResult? remoteImageInliningResult = null;
         PdfRenderResult? renderResult = null;
         var traceId = Activity.Current?.TraceId.ToString() ?? httpContext.TraceIdentifier;
 
@@ -72,7 +75,16 @@ public static class PdfRenderEndpoints
                     "The sanitized HTML does not contain enough safe content to render a PDF.");
             }
 
-            renderResult = renderer.Render(validatedRequest, sanitizationResult.Html, cancellationToken);
+            // Pipeline: sanitize HTML -> inline remote images server-side -> render PDF.
+            var remoteImageInliningStopwatch = Stopwatch.StartNew();
+            remoteImageInliningResult = await remoteImageInliningService.InlineAsync(
+                validatedRequest,
+                sanitizationResult.Html,
+                cancellationToken);
+            remoteImageInliningStopwatch.Stop();
+            remoteImageInliningElapsed = remoteImageInliningStopwatch.Elapsed;
+
+            renderResult = renderer.Render(validatedRequest, remoteImageInliningResult.Html, cancellationToken);
             totalStopwatch.Stop();
 
             if (sanitizationResult.WasAggressive)
@@ -89,13 +101,17 @@ public static class PdfRenderEndpoints
             }
 
             logger.LogInformation(
-                "Rendered PDF successfully for {FileName}. OriginalHtmlLength={OriginalHtmlLength} SanitizedHtmlLength={SanitizedHtmlLength} PdfSizeBytes={PdfSizeBytes} ValidationMs={ValidationMs} SanitizationMs={SanitizationMs} ConverterPropertiesMs={ConverterPropertiesMs} RenderMs={RenderMs} ByteExtractionMs={ByteExtractionMs} TotalMs={TotalMs} WasAggressiveSanitization={WasAggressiveSanitization} RemovedRelevantTags={RemovedRelevantTags}",
+                "Rendered PDF successfully for {FileName}. OriginalHtmlLength={OriginalHtmlLength} SanitizedHtmlLength={SanitizedHtmlLength} RemoteImageProcessedCount={RemoteImageProcessedCount} RemoteImageInlinedCount={RemoteImageInlinedCount} RemoteImageFailedCount={RemoteImageFailedCount} PdfSizeBytes={PdfSizeBytes} ValidationMs={ValidationMs} SanitizationMs={SanitizationMs} RemoteImageInliningMs={RemoteImageInliningMs} ConverterPropertiesMs={ConverterPropertiesMs} RenderMs={RenderMs} ByteExtractionMs={ByteExtractionMs} TotalMs={TotalMs} WasAggressiveSanitization={WasAggressiveSanitization} RemovedRelevantTags={RemovedRelevantTags}",
                 validatedRequest.FileName,
                 validatedRequest.OriginalHtmlLength,
                 sanitizationResult.SanitizedHtmlLength,
+                remoteImageInliningResult.ProcessedResourceCount,
+                remoteImageInliningResult.InlinedResourceCount,
+                remoteImageInliningResult.FailedResourceCount,
                 renderResult.Content.Length,
                 validationElapsed.TotalMilliseconds,
                 sanitizationElapsed.TotalMilliseconds,
+                remoteImageInliningElapsed.TotalMilliseconds,
                 renderResult.ConverterPropertiesElapsed.TotalMilliseconds,
                 renderResult.RenderElapsed.TotalMilliseconds,
                 renderResult.ByteExtractionElapsed.TotalMilliseconds,
@@ -128,13 +144,14 @@ public static class PdfRenderEndpoints
             totalStopwatch.Stop();
 
             logger.LogWarning(
-                "Rejected HTML during PDF render. Reason={Reason} FileName={FileName} OriginalHtmlLength={OriginalHtmlLength} SanitizedHtmlLength={SanitizedHtmlLength} ValidationMs={ValidationMs} SanitizationMs={SanitizationMs} ConverterPropertiesMs={ConverterPropertiesMs} RenderMs={RenderMs} ByteExtractionMs={ByteExtractionMs} TotalMs={TotalMs} WasAggressiveSanitization={WasAggressiveSanitization} RemovedRelevantTags={RemovedRelevantTags}",
+                "Rejected HTML during PDF render. Reason={Reason} FileName={FileName} OriginalHtmlLength={OriginalHtmlLength} SanitizedHtmlLength={SanitizedHtmlLength} ValidationMs={ValidationMs} SanitizationMs={SanitizationMs} RemoteImageInliningMs={RemoteImageInliningMs} ConverterPropertiesMs={ConverterPropertiesMs} RenderMs={RenderMs} ByteExtractionMs={ByteExtractionMs} TotalMs={TotalMs} WasAggressiveSanitization={WasAggressiveSanitization} RemovedRelevantTags={RemovedRelevantTags}",
                 exception.Message,
                 validatedRequest?.FileName ?? request.FileName ?? "document.pdf",
                 validatedRequest?.OriginalHtmlLength ?? request.Html?.Length ?? 0,
                 sanitizationResult?.SanitizedHtmlLength ?? 0,
                 validationElapsed.TotalMilliseconds,
                 sanitizationElapsed.TotalMilliseconds,
+                remoteImageInliningElapsed.TotalMilliseconds,
                 renderResult?.ConverterPropertiesElapsed.TotalMilliseconds ?? 0,
                 renderResult?.RenderElapsed.TotalMilliseconds ?? 0,
                 renderResult?.ByteExtractionElapsed.TotalMilliseconds ?? 0,
@@ -151,13 +168,14 @@ public static class PdfRenderEndpoints
 
             logger.LogError(
                 exception,
-                "Failed to render PDF unexpectedly. FileName={FileName} OriginalHtmlLength={OriginalHtmlLength} SanitizedHtmlLength={SanitizedHtmlLength} PdfSizeBytes={PdfSizeBytes} ValidationMs={ValidationMs} SanitizationMs={SanitizationMs} ConverterPropertiesMs={ConverterPropertiesMs} RenderMs={RenderMs} ByteExtractionMs={ByteExtractionMs} TotalMs={TotalMs} WasAggressiveSanitization={WasAggressiveSanitization} RemovedRelevantTags={RemovedRelevantTags}",
+                "Failed to render PDF unexpectedly. FileName={FileName} OriginalHtmlLength={OriginalHtmlLength} SanitizedHtmlLength={SanitizedHtmlLength} PdfSizeBytes={PdfSizeBytes} ValidationMs={ValidationMs} SanitizationMs={SanitizationMs} RemoteImageInliningMs={RemoteImageInliningMs} ConverterPropertiesMs={ConverterPropertiesMs} RenderMs={RenderMs} ByteExtractionMs={ByteExtractionMs} TotalMs={TotalMs} WasAggressiveSanitization={WasAggressiveSanitization} RemovedRelevantTags={RemovedRelevantTags}",
                 validatedRequest?.FileName ?? "document.pdf",
                 validatedRequest?.OriginalHtmlLength ?? request.Html?.Length ?? 0,
                 sanitizationResult?.SanitizedHtmlLength ?? 0,
                 renderResult?.Content.Length ?? 0,
                 validationElapsed.TotalMilliseconds,
                 sanitizationElapsed.TotalMilliseconds,
+                remoteImageInliningElapsed.TotalMilliseconds,
                 renderResult?.ConverterPropertiesElapsed.TotalMilliseconds ?? 0,
                 renderResult?.RenderElapsed.TotalMilliseconds ?? 0,
                 renderResult?.ByteExtractionElapsed.TotalMilliseconds ?? 0,

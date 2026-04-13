@@ -182,7 +182,7 @@ public sealed class PdfRenderEndpointTests : IClassFixture<WebApplicationFactory
     }
 
     [Fact]
-    public async Task PostRender_WhenExternalResourceAuthorityIsRejected_ReturnsUnprocessableEntity()
+    public async Task PostRender_WhenExternalResourceAuthorityIsRejected_UsesPlaceholderAndReturnsPdf()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
 
@@ -196,16 +196,36 @@ public sealed class PdfRenderEndpointTests : IClassFixture<WebApplicationFactory
             },
             cancellationToken);
 
-        Assert.Equal(HttpStatusCode.UnprocessableEntity, response.StatusCode);
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal("application/pdf", response.Content.Headers.ContentType?.MediaType);
 
-        var problem = await ReadProblemDetailsAsync(response, cancellationToken);
-
-        Assert.Equal(422, problem.GetProperty("status").GetInt32());
-        Assert.Contains("authority", problem.GetProperty("detail").GetString());
+        var body = await response.Content.ReadAsByteArrayAsync(cancellationToken);
+        Assert.Equal("%PDF-", Encoding.ASCII.GetString(body, 0, 5));
     }
 
     [Fact]
-    public async Task PostRender_WhenHttpsResourceHasNoBaseUriAnchor_ReturnsUnprocessableEntity()
+    public async Task PostRender_WhenPdfIsRequestedAndImageInliningFallsBack_ReturnsPdf()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        using var request = new HttpRequestMessage(HttpMethod.Post, "/api/pdf/render")
+        {
+            Content = JsonContent.Create(new PdfRenderRequest
+            {
+                Html = "<html><body><img src=\"https://blocked.example/image.png\" alt=\"Blocked\" /></body></html>",
+                FileName = "blocked-resource",
+                BaseUri = "https://example.com/"
+            })
+        };
+        request.Headers.Accept.ParseAdd("application/pdf");
+
+        using var response = await _httpClient.SendAsync(request, cancellationToken);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal("application/pdf", response.Content.Headers.ContentType?.MediaType);
+    }
+
+    [Fact]
+    public async Task PostRender_WhenHttpsResourceHasNoBaseUriAnchor_UsesPlaceholderAndReturnsPdf()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
 
@@ -218,16 +238,12 @@ public sealed class PdfRenderEndpointTests : IClassFixture<WebApplicationFactory
             },
             cancellationToken);
 
-        Assert.Equal(HttpStatusCode.UnprocessableEntity, response.StatusCode);
-
-        var problem = await ReadProblemDetailsAsync(response, cancellationToken);
-
-        Assert.Equal(422, problem.GetProperty("status").GetInt32());
-        Assert.Contains("require a valid baseUri", problem.GetProperty("detail").GetString());
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal("application/pdf", response.Content.Headers.ContentType?.MediaType);
     }
 
     [Fact]
-    public async Task PostRender_WhenDataUriMediaTypeIsNotAllowed_ReturnsUnprocessableEntity()
+    public async Task PostRender_WhenDataUriMediaTypeIsNotAllowed_UsesPlaceholderAndReturnsPdf()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
 
@@ -241,12 +257,8 @@ public sealed class PdfRenderEndpointTests : IClassFixture<WebApplicationFactory
             },
             cancellationToken);
 
-        Assert.Equal(HttpStatusCode.UnprocessableEntity, response.StatusCode);
-
-        var problem = await ReadProblemDetailsAsync(response, cancellationToken);
-
-        Assert.Equal(422, problem.GetProperty("status").GetInt32());
-        Assert.Contains("data URI media type", problem.GetProperty("detail").GetString());
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal("application/pdf", response.Content.Headers.ContentType?.MediaType);
     }
 
     [Fact]

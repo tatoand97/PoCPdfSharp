@@ -26,7 +26,7 @@ public sealed partial class HtmlSanitizationService : IHtmlSanitizationService
     private static readonly HashSet<string> AllowedAttributes = new(
     [
         "class", "id", "style", "lang", "dir", "title",
-        "src", "alt", "width", "height",
+        "src", "srcset", "alt", "width", "height",
         "colspan", "rowspan", "scope",
         "align", "valign", "cellpadding", "cellspacing", "border"
     ], Comparer);
@@ -39,6 +39,8 @@ public sealed partial class HtmlSanitizationService : IHtmlSanitizationService
     [
         "color",
         "background-color",
+        "background",
+        "background-image",
         "font", "font-family", "font-size", "font-style", "font-weight",
         "line-height", "letter-spacing",
         "text-align", "text-decoration", "text-indent", "text-transform",
@@ -165,7 +167,10 @@ public sealed partial class HtmlSanitizationService : IHtmlSanitizationService
         return hasVisibleText || hasImage || hasStructuredTable;
     }
 
-    [GeneratedRegex(@"(?ix)(expression\s*\(|javascript:|vbscript:|url\s*\()")]
+    // We intentionally allow CSS url(...) values here so the next pipeline step can
+    // validate and inline only safe HTTPS/data image references. Dangerous executable
+    // schemes and non-image data payloads are still blocked at sanitization time.
+    [GeneratedRegex(@"(?ix)(expression\s*\(|javascript:|vbscript:|file:|ftp:|blob:|data\s*:\s*image/svg\+xml|data\s*:\s*text/html)")]
     private static partial Regex DangerousCssValueRegex();
 
     private static void ReplaceValues(ISet<string> target, IEnumerable<string> values)

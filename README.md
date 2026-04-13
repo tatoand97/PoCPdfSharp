@@ -2,7 +2,7 @@
 
 PoC de `HTML -> PDF` sobre una `ASP.NET Core Minimal API` en `.NET 10`, manteniendo el flujo actual:
 
-`request JSON -> validación -> sanitización -> render HTML->PDF en memoria -> respuesta binaria application/pdf`
+`request JSON -> validación -> sanitización -> inline server-side de imágenes remotas -> render HTML->PDF en memoria -> respuesta binaria application/pdf`
 
 La implementación usa `iText` actual con `pdfHTML`, sanitiza con `HtmlSanitizer`, restringe recursos externos y devuelve siempre el PDF binario, nunca base64.
 
@@ -12,6 +12,7 @@ La implementación usa `iText` actual con `pdfHTML`, sanitiza con `HtmlSanitizer
 - Recibe un JSON con `html`, `fileName` y `baseUri`.
 - Valida el request y normaliza el nombre del archivo.
 - Sanitiza HTML, atributos, CSS y contenido activo.
+- Convierte imágenes remotas `https` permitidas a `data:image/...;base64,...` en backend.
 - Renderiza el PDF completamente en memoria.
 - Devuelve `200 OK` con `Content-Type: application/pdf`.
 - Devuelve errores consistentes como `application/problem+json` con `traceId`.
@@ -30,7 +31,7 @@ La implementación usa `iText` actual con `pdfHTML`, sanitiza con `HtmlSanitizer
 
 - `Program.cs`: composición de DI, logging, `ProblemDetails`, opciones y pipeline HTTP.
 - `Endpoints/`: endpoint `POST /api/pdf/render`.
-- `Services/`: validación, sanitización y render HTML->PDF.
+- `Services/`: validación, sanitización, inline remoto de imágenes y render HTML->PDF.
 - `Infrastructure/`: exception handler, supresión selectiva de diagnósticos y política de recursos externos.
 - `Contracts/`: request y resultados internos del pipeline.
 - `Options/`: opciones configurables de renderizado.
@@ -55,6 +56,19 @@ dotnet build PoCPdfSharp.slnx
 ```powershell
 dotnet run --project PoCPdfSharp.csproj
 ```
+
+### Docker
+
+```powershell
+docker compose up --build
+```
+
+El repo incluye [`compose.yaml`](./compose.yaml), que levanta el contenedor con recursos fijos:
+
+- `2 CPUs`
+- `6 GB` de RAM
+
+La API queda publicada en `http://localhost:8080`.
 
 ### Test
 
@@ -161,6 +175,28 @@ La sección `PdfRendering` vive en [`appsettings.json`](./appsettings.json):
 
 La aplicación valida estas opciones al arranque y falla temprano si la configuración básica es inválida.
 
+La sección `RemoteImages` controla el inlining server-side:
+
+```json
+"RemoteImages": {
+  "AllowedImageHosts": [
+    "images.unsplash.com",
+    "raw.githubusercontent.com",
+    "cdn.example.com"
+  ],
+  "MaxImageBytes": 5242880,
+  "RequestTimeoutSeconds": 10,
+  "MaxRedirects": 3,
+  "ReplaceFailedImagesWithTransparentPlaceholder": true
+}
+```
+
+- `AllowedImageHosts`: allowlist estricta de hosts aceptados para `<img src>`, `srcset` y `url(...)` inline.
+- `MaxImageBytes`: límite por imagen descargada.
+- `RequestTimeoutSeconds`: timeout por imagen remota.
+- `MaxRedirects`: redirects manuales máximos; cada destino vuelve a validarse.
+- `ReplaceFailedImagesWithTransparentPlaceholder`: reemplaza solo la imagen fallida por un pixel transparente.
+
 ## Decisiones técnicas relevantes
 
 - El endpoint mantiene el contrato actual y devuelve binario PDF, no base64.
@@ -178,12 +214,14 @@ La PoC está endurecida para escenarios de HTML arbitrario, dentro de las limita
 
 - elimina `script`, `iframe`, `form`, `object`, `embed`, `svg`, `meta` y contenido activo
 - elimina handlers inline y CSS peligroso
-- bloquea `javascript:`, `vbscript:` y `url(...)` en valores CSS permitidos
+- bloquea `javascript:`, `vbscript:`, `file:`, `ftp:` y `blob:` en valores CSS permitidos
 - solo permite un subconjunto acotado de tags, atributos y propiedades CSS útiles para PDF
 - restringe imágenes remotas a `https` y `data:`
+- aplica allowlist de hosts y validación DNS/IP para mitigar SSRF
 - aplica límite de bytes, timeout y media types permitidos
 - bloquea redirects automáticos
-- puede restringir recursos externos a la misma autoridad de `baseUri`
+- revalida redirects y bloquea destinos internos, loopback, link-local y metadata endpoints
+- fuerza que el renderer final solo consuma imágenes `data:` ya inlineadas
 
 ## Limitaciones
 
@@ -205,9 +243,8 @@ Cobertura verificada localmente:
 - `baseUri` con user info -> `400`
 - JSON mal formado -> `400`
 - HTML inútil tras sanitización -> `422`
-- recurso externo no permitido -> `422`
-- recurso `https` sin `baseUri` cuando la restricción por host está activa -> `422`
-- `data:` URI con media type no permitido -> `422`
+- imagen remota no permitida o inválida -> render sigue con placeholder seguro
+- `data:` URI con media type no permitido -> render sigue con placeholder seguro
 - normalización de `fileName`
 - `fileName` reservado -> fallback a `document.pdf`
 - `traceId` presente en errores

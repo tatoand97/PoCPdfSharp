@@ -1,0 +1,12 @@
+services:
+  pocpdfsharp:
+    container_name: pocpdfsharp
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8080:8080"
+    environment:
+      ASPNETCORE_URLS: http://+:8080
+    cpus: 2.0
+    mem_limit: 6g

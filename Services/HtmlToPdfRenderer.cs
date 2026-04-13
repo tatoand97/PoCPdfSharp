@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Text.RegularExpressions;
 using AngleSharp.Html.Parser;
 using iText.Html2pdf;
 using iText.Kernel.Pdf;
@@ -9,7 +10,7 @@ using PoCPdfSharp.Options;
 
 namespace PoCPdfSharp.Services;
 
-public sealed class HtmlToPdfRenderer : IHtmlToPdfRenderer
+public sealed partial class HtmlToPdfRenderer : IHtmlToPdfRenderer
 {
     private readonly IHttpClientFactory _httpClientFactory;
     private readonly IOptions<PdfRenderingOptions> _options;
@@ -85,11 +86,61 @@ public sealed class HtmlToPdfRenderer : IHtmlToPdfRenderer
 
             var resolvedUrl = resourceRetriever.EnsureResourceUrlAllowed(source);
 
-            if (string.Equals(resolvedUrl.Scheme, "data", StringComparison.OrdinalIgnoreCase))
+            EnsureInlineOnlyImageSource(resolvedUrl, resourceRetriever);
+        }
+
+        foreach (var image in document.QuerySelectorAll("img[srcset]"))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var srcSet = image.GetAttribute("srcset");
+
+            if (string.IsNullOrWhiteSpace(srcSet))
             {
-                _ = resourceRetriever.GetByteArrayByUrl(resolvedUrl);
+                continue;
+            }
+
+            foreach (Match match in HttpsOrDataUrlRegex().Matches(srcSet))
+            {
+                var resolvedUrl = resourceRetriever.EnsureResourceUrlAllowed(match.Value);
+                EnsureInlineOnlyImageSource(resolvedUrl, resourceRetriever);
             }
         }
+
+        foreach (var element in document.All.Where(node => node.HasAttribute("style")))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var style = element.GetAttribute("style");
+
+            if (string.IsNullOrWhiteSpace(style))
+            {
+                continue;
+            }
+
+            foreach (Match match in CssUrlRegex().Matches(style))
+            {
+                var rawUrl = match.Groups["value"].Value.Trim();
+
+                if (string.IsNullOrWhiteSpace(rawUrl))
+                {
+                    continue;
+                }
+
+                var resolvedUrl = resourceRetriever.EnsureResourceUrlAllowed(rawUrl);
+                EnsureInlineOnlyImageSource(resolvedUrl, resourceRetriever);
+            }
+        }
+    }
+
+    private static void EnsureInlineOnlyImageSource(Uri resolvedUrl, RestrictedResourceRetriever resourceRetriever)
+    {
+        if (!string.Equals(resolvedUrl.Scheme, "data", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new UnprocessableHtmlException(
+                $"Remote image URL '{resolvedUrl}' must be inlined before PDF rendering.");
+        }
+
+        _ = resourceRetriever.GetByteArrayByUrl(resolvedUrl);
     }
 
     private ConverterProperties BuildConverterProperties(
@@ -134,4 +185,10 @@ public sealed class HtmlToPdfRenderer : IHtmlToPdfRenderer
 
         return (pdfBytes, byteExtractionStopwatch.Elapsed);
     }
+
+    [GeneratedRegex(@"url\(\s*(?<quote>['""]?)(?<value>.*?)\k<quote>\s*\)", RegexOptions.IgnoreCase | RegexOptions.Singleline)]
+    private static partial Regex CssUrlRegex();
+
+    [GeneratedRegex(@"https://[^\s,]+|data:[^\s]+", RegexOptions.IgnoreCase)]
+    private static partial Regex HttpsOrDataUrlRegex();
 }

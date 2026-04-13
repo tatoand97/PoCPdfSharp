@@ -1,0 +1,11 @@
+.git
+.github
+.vs
+bin
+obj
+TestResults
+tests/**/bin
+tests/**/obj
+README.md
+*.user
+*.suo

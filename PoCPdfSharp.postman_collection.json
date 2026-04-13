@@ -1,0 +1,219 @@
+{
+  "info": {
+    "_postman_id": "f2c31b55-0e72-4ffb-bf7a-bb10d364e7aa",
+    "name": "PoCPdfSharp",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "Render PDF - OK",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('Status 200', function () {",
+              "    pm.response.to.have.status(200);",
+              "});",
+              "",
+              "pm.test('Content-Type application/pdf', function () {",
+              "    pm.expect(pm.response.headers.get('Content-Type')).to.include('application/pdf');",
+              "});",
+              "",
+              "pm.test('Body is not empty', function () {",
+              "    pm.expect(pm.response.size().body).to.be.above(0);",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "Accept",
+            "value": "application/pdf"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"html\": \"<html><body><h1>PoC HTML to PDF</h1><p>PDF generado desde Postman.</p></body></html>\",\n  \"fileName\": \"postman-demo.pdf\",\n  \"baseUri\": \"https://example.com/\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/api/pdf/render",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "pdf",
+            "render"
+          ]
+        },
+        "description": "Caso feliz. Devuelve el PDF binario directamente."
+      },
+      "response": []
+    },
+    {
+      "name": "Render PDF - Missing html",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('Status 400', function () {",
+              "    pm.response.to.have.status(400);",
+              "});",
+              "",
+              "pm.test('ProblemDetails response', function () {",
+              "    pm.expect(pm.response.headers.get('Content-Type')).to.include('application/problem+json');",
+              "    var json = pm.response.json();",
+              "    pm.expect(json.title).to.eql('The PDF render request is invalid.');",
+              "    pm.expect(json.traceId).to.exist;",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "Accept",
+            "value": "application/problem+json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"fileName\": \"missing-html.pdf\",\n  \"baseUri\": \"https://example.com/\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/api/pdf/render",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "pdf",
+            "render"
+          ]
+        },
+        "description": "Prueba validación cuando falta el campo obligatorio html."
+      },
+      "response": []
+    },
+    {
+      "name": "Render PDF - Invalid baseUri",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('Status 400', function () {",
+              "    pm.response.to.have.status(400);",
+              "});",
+              "",
+              "pm.test('baseUri rejected', function () {",
+              "    var json = pm.response.json();",
+              "    pm.expect(json.detail).to.include('absolute HTTPS URL');",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "Accept",
+            "value": "application/problem+json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"html\": \"<html><body><p>BaseUri invalida.</p></body></html>\",\n  \"fileName\": \"invalid-base-uri.pdf\",\n  \"baseUri\": \"http://example.com/\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/api/pdf/render",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "pdf",
+            "render"
+          ]
+        },
+        "description": "Prueba validación de baseUri no HTTPS."
+      },
+      "response": []
+    },
+    {
+      "name": "Render PDF - Sanitized HTML empty",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('Status 422', function () {",
+              "    pm.response.to.have.status(422);",
+              "});",
+              "",
+              "pm.test('Unprocessable HTML', function () {",
+              "    var json = pm.response.json();",
+              "    pm.expect(json.title).to.eql('The sanitized HTML cannot be rendered.');",
+              "    pm.expect(json.traceId).to.exist;",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "Accept",
+            "value": "application/problem+json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"html\": \"<script>alert('xss')</script>\",\n  \"fileName\": \"sanitized-empty.pdf\",\n  \"baseUri\": \"https://example.com/\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/api/pdf/render",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "pdf",
+            "render"
+          ]
+        },
+        "description": "Prueba el caso donde la sanitización deja el HTML sin contenido utilizable."
+      },
+      "response": []
+    }
+  ]
+}
